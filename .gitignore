@@ -1,0 +1,13 @@
+# Bungie API credentials
+Config/app-config.json
+*.secret
+.env
+Data/bungie_token.json
+
+# PowerShell sensitive files
+secrets/
+credentials/
+
+# Large files
+Data/manifest.json
+Scripts/Data/manifest.json

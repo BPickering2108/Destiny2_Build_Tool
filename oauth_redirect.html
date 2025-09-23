@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bungie OAuth - Authorization Code</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .code-box {
+            background-color: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            word-break: break-all;
+            margin: 20px 0;
+        }
+        .copy-btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .copy-btn:hover {
+            background-color: #0056b3;
+        }
+        .success {
+            color: #28a745;
+            margin-top: 10px;
+        }
+        .error {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bungie OAuth Authorization</h1>
+        
+        <div id="success-section" style="display: none;">
+            <p>✅ Authorization successful! Copy this code:</p>
+            <div class="code-box" id="auth-code"></div>
+            <button class="copy-btn" onclick="copyCode()">Copy Code</button>
+            <div id="copy-success" class="success" style="display: none;">
+                ✅ Code copied to clipboard!
+            </div>
+            <p><strong>Instructions:</strong></p>
+            <ol>
+                <li>Copy the authorization code above</li>
+                <li>Return to your PowerShell script</li>
+                <li>Paste the code when prompted</li>
+                <li>You can close this window</li>
+            </ol>
+        </div>
+        
+        <div id="error-section" style="display: none;">
+            <p class="error">❌ No authorization code found in URL.</p>
+            <p>This usually means there was an error in the OAuth flow.</p>
+        </div>
+        
+        <div id="loading-section">
+            <p>Processing authorization...</p>
+        </div>
+    </div>
+
+    <script>
+        function parseAuthCode() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+            
+            document.getElementById('loading-section').style.display = 'none';
+            
+            if (error) {
+                document.getElementById('error-section').style.display = 'block';
+                console.error('OAuth error:', error);
+                return;
+            }
+            
+            if (code) {
+                document.getElementById('auth-code').textContent = code;
+                document.getElementById('success-section').style.display = 'block';
+            } else {
+                document.getElementById('error-section').style.display = 'block';
+            }
+        }
+        
+        function copyCode() {
+            const codeText = document.getElementById('auth-code').textContent;
+            navigator.clipboard.writeText(codeText).then(function() {
+                document.getElementById('copy-success').style.display = 'block';
+                setTimeout(() => {
+                    document.getElementById('copy-success').style.display = 'none';
+                }, 3000);
+            }).catch(function(err) {
+                console.error('Could not copy text: ', err);
+                // Fallback: select the text
+                const range = document.createRange();
+                range.selectNodeContents(document.getElementById('auth-code'));
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            });
+        }
+        
+        // Parse the authorization code when page loads
+        window.onload = parseAuthCode;
+    </script>
+</body>
+</html>
