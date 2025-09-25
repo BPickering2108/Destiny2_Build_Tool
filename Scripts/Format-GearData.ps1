@@ -151,14 +151,14 @@ function Format-GearItem {
         
         # Build formatted item
         $gearItem = @{
-            Name = $itemDef.displayProperties.name
+            Name = if ($itemDef.displayProperties -and $itemDef.displayProperties.name) { $itemDef.displayProperties.name } else { "Unknown Item" }
             Hash = $Item.itemHash
             InstanceId = $Item.itemInstanceId
             Category = $category
-            Type = $itemDef.itemTypeDisplayName
+            Type = if ($itemDef.itemTypeDisplayName) { $itemDef.itemTypeDisplayName } else { "Unknown Type" }
             Tier = Get-ItemTier -ItemDef $itemDef
             Element = Get-ItemElement -InstanceData $instanceData -ItemDef $itemDef
-            Power = if ($instanceData) { $instanceData.primaryStat.value } else { $null }
+            Power = if ($instanceData -and $instanceData.primaryStat) { $instanceData.primaryStat.value } else { $null }
             Location = $Location
             Sockets = $sockets
             Stats = $stats
@@ -218,13 +218,17 @@ function Get-ItemTier {
         [PSCustomObject]$ItemDef
     )
     
-    switch ($ItemDef.inventory.tierType) {
-        2 { return "Common" }
-        3 { return "Rare" }
-        4 { return "Legendary" }
-        5 { return "Exotic" }
-        default { return "Unknown" }
+    if ($ItemDef.inventory -and $ItemDef.inventory.tierType) {
+        switch ($ItemDef.inventory.tierType) {
+            2 { return "Common" }
+            3 { return "Rare" }
+            4 { return "Legendary" }
+            5 { return "Exotic" }
+            default { return "Unknown" }
+        }
     }
+
+    return "Unknown"
 }
 
 # Get item element
@@ -293,10 +297,10 @@ function Get-ItemSockets {
                     $plugDef = Get-ItemDefinition -ItemHash $socket.plugHash
                 }
                 
-                if ($plugDef -and $plugDef.displayProperties.name) {
+                if ($plugDef -and $plugDef.displayProperties -and $plugDef.displayProperties.name) {
                     $sockets += @{
                         Name = $plugDef.displayProperties.name
-                        Description = $plugDef.displayProperties.description
+                        Description = if ($plugDef.displayProperties.description) { $plugDef.displayProperties.description } else { "" }
                         Hash = $socket.plugHash
                         IsEnabled = $socket.isEnabled
                     }
@@ -419,7 +423,7 @@ function Format-GearForLLM {
                 Light = $character.Light
                 Race = $character.Race
                 Gender = $character.Gender
-                LastPlayed = $character.LastPlayed.ToString("yyyy-MM-dd")
+                LastPlayed = if ($character.LastPlayed) { $character.LastPlayed.ToString("yyyy-MM-dd") } else { "Unknown" }
                 Equipped = $equippedGear
                 Inventory = $characterInventory
             }
@@ -589,7 +593,7 @@ function Save-GearData {
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$GearData,
         
-        [string]$OutputPath = "Data/gear_collection.json",
+        [string]$OutputPath = "../Data/gear_collection.json",
         
         [switch]$IncludeTextFormat
     )
@@ -609,7 +613,7 @@ function Save-GearData {
         if ($IncludeTextFormat) {
             $textPath = $OutputPath -replace "\.json$", ".txt"
             $textData = Convert-GearToText -GearData $GearData -IncludeDetails
-            $textData | Out-File -FilePath $textPath -Encoding UTF8
+            $textData | Out-File -FilePath $textPath -Encoding UTF8 -Force
             Write-Host "Text format saved to: $textPath" -ForegroundColor Green
         }
         
@@ -655,18 +659,53 @@ function Save-CharacterFiles {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$InventoryData
+        [PSCustomObject]$FormattedGearData  # This should be the output from Format-GearForLLM
     )
     
-    # Save individual character files
-    foreach ($character in $InventoryData.Characters) {
-        $fileName = "../Data/$($character.Class)_$($character.CharacterId)_gear.json"
-        $character | ConvertTo-Json -Depth 10 | Out-File -FilePath $fileName -Encoding UTF8
+    # Save individual character files with formatted data
+    foreach ($character in $FormattedGearData.Characters) {
+        # Handle cases where Class might be null or empty
+        $className = if ($character.Class -and $character.Class -ne "Unknown" -and $character.Class.Trim() -ne "") {
+            $character.Class.Trim()
+        } else {
+            "Character_$([guid]::NewGuid().ToString().Substring(0,8))"
+        }
+
+        $fileName = "../Data/${className}_gear.json"
+        
+        # Create a clean character data object with readable information
+        $characterFile = @{
+            Character = @{
+                Class = $character.Class
+                Light = $character.Light
+                Race = $character.Race
+                Gender = $character.Gender
+                LastPlayed = $character.LastPlayed
+            }
+            EquippedGear = $character.Equipped
+            InventoryGear = $character.Inventory
+            Summary = @{
+                EquippedCount = $character.Equipped.Count
+                InventoryCount = $character.Inventory.Count
+                TotalGear = $character.Equipped.Count + $character.Inventory.Count
+            }
+        }
+        
+        $characterFile | ConvertTo-Json -Depth 10 | Out-File -FilePath $fileName -Encoding UTF8
         Write-Host "Saved: $fileName" -ForegroundColor Green
     }
     
-    # Save vault file
+    # Save vault file with formatted data
     $vaultFile = "../Data/vault_gear.json"
-    $InventoryData.VaultData | ConvertTo-Json -Depth 10 | Out-File -FilePath $vaultFile -Encoding UTF8
+    $vaultData = @{
+        VaultGear = $FormattedGearData.Vault
+        Summary = @{
+            TotalItems = $FormattedGearData.Vault.Count
+            WeaponCount = ($FormattedGearData.Vault | Where-Object Category -eq "Weapon").Count
+            ArmorCount = ($FormattedGearData.Vault | Where-Object Category -eq "Armor").Count
+        }
+    }
+    
+    $vaultData | ConvertTo-Json -Depth 10 | Out-File -FilePath $vaultFile -Encoding UTF8
     Write-Host "Saved: $vaultFile" -ForegroundColor Green
 }

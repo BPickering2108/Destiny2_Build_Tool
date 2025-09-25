@@ -26,7 +26,7 @@ function Get-DestinyMemberships {
             throw "No Destiny 2 characters found on this account"
         }
         
-        Write-Host "Found $($user.destinyMemberships.Count) Destiny membership(s):" -ForegroundColor Green
+<#         Write-Host "Found $($user.destinyMemberships.Count) Destiny membership(s):" -ForegroundColor Green
         for ($i = 0; $i -lt $user.destinyMemberships.Count; $i++) {
             $membership = $user.destinyMemberships[$i]
             $platform = switch ($membership.membershipType) {
@@ -39,7 +39,7 @@ function Get-DestinyMemberships {
                 default { "Unknown ($($membership.membershipType))" }
             }
             Write-Host "  $($i + 1). $($membership.displayName) - $platform" -ForegroundColor Gray
-        }
+        } #>
         
         return $user.destinyMemberships
     }
@@ -98,9 +98,10 @@ function Get-DestinyManifest {
         $manifestUrl = "https://www.bungie.net$($manifest.jsonWorldContentPaths.en)"
         Write-Host "Manifest URL: $manifestUrl" -ForegroundColor Gray
         
-        # Check if we have cached manifest - FIXED PATHS
-        $manifestFile = "../Data/manifest.json"
-        $versionFile = "../Data/manifest_version.txt"
+        # Check if we have cached manifest - MANIFEST FOLDER
+        $manifestDir = "../Manifest"
+        $manifestFile = "$manifestDir/manifest.json"
+        $versionFile = "$manifestDir/manifest_version.txt"
         
         $downloadManifest = $true
         if ((Test-Path $manifestFile) -and (Test-Path $versionFile)) {
@@ -113,10 +114,10 @@ function Get-DestinyManifest {
         
         if ($downloadManifest) {
             Write-Host "Downloading manifest data (this may take a moment)..." -ForegroundColor Yellow
-            
-            # Ensure Data directory exists - FIXED PATH
-            if (!(Test-Path "../Data")) {
-                New-Item -ItemType Directory -Path "../Data" -Force | Out-Null
+
+            # Ensure Manifest directory exists
+            if (!(Test-Path $manifestDir)) {
+                New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
             }
             
             # Download manifest
@@ -161,6 +162,43 @@ function Get-DestinyManifest {
     catch {
         Write-Warning "Failed to get manifest: $($_.Exception.Message)"
         return $null
+    }
+}
+
+# Helper functions to convert character metadata
+function Get-CharacterClassName {
+    [CmdletBinding()]
+    param([int]$ClassType)
+
+    switch ($ClassType) {
+        0 { return "Titan" }
+        1 { return "Hunter" }
+        2 { return "Warlock" }
+        default { return "Unknown" }
+    }
+}
+
+function Get-CharacterRaceName {
+    [CmdletBinding()]
+    param([int]$RaceType)
+
+    switch ($RaceType) {
+        0 { return "Human" }
+        1 { return "Awoken" }
+        2 { return "Exo" }
+        default { return "Unknown" }
+    }
+}
+
+function Get-CharacterGenderName {
+    [CmdletBinding()]
+    param([int]$GenderType)
+
+    switch ($GenderType) {
+        0 { return "Male" }
+        1 { return "Female" }
+        2 { return "Other" }
+        default { return "Unknown" }
     }
 }
 
@@ -261,7 +299,7 @@ function Get-CharacterSummary {
 }
 
 # Get all inventory for all characters
-# Modified function to get data separately
+# Get all inventory for all characters
 function Get-AllCharacterInventories {
     [CmdletBinding()]
     param()
@@ -301,24 +339,6 @@ function Get-AllCharacterInventories {
         Write-Host "Getting character details..." -ForegroundColor Yellow
         $charactersResponse = Get-CharacterDetails -MembershipType $membership.membershipType -MembershipId $membership.membershipId
 
-        if ($charactersResponse.characters) {
-            if ($charactersResponse.characters.data) {
-                # Try different ways to access the character IDs
-                try {
-                    $keys1 = $charactersResponse.characters.data.Keys
-                    Write-Host "Method 1 - Keys: $($keys1 -join ', ')" -ForegroundColor Green
-                } catch {
-                    Write-Host "Method 1 failed: $($_.Exception.Message)" -ForegroundColor Red
-                }
-                
-                try {
-                    $keys2 = $charactersResponse.characters.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
-                    Write-Host "Method 2 - Properties: $($keys2 -join ', ')" -ForegroundColor Green
-                } catch {
-                    Write-Host "Method 2 failed: $($_.Exception.Message)" -ForegroundColor Red
-                }
-            }
-        }
                 
         # 2. Get each character's equipment and inventory separately
         $characterData = @()
@@ -326,46 +346,42 @@ function Get-AllCharacterInventories {
         if ($charactersResponse.characters -and $charactersResponse.characters.data) {
             $characterIds = $charactersResponse.characters.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
             foreach ($characterId in $characterIds) {
-                $char = $charactersResponse.characters.data.$characterId
-                
-                Write-Host "Processing character: $characterId..." -ForegroundColor Gray
-                
-                # Get equipment for this character
-                $equipmentUri = "https://www.bungie.net/Platform/Destiny2/$($membership.membershipType)/Profile/$($membership.membershipId)/Character/$characterId/?components=205,300,304"
-                $equipmentData = Invoke-BungieApiRequest -Uri $equipmentUri -RequireAuth -UseSessionToken
-                
-                # Get inventory for this character  
-                $inventoryUri = "https://www.bungie.net/Platform/Destiny2/$($membership.membershipType)/Profile/$($membership.membershipId)/Character/$characterId/?components=201,300,304"
-                $inventoryData = Invoke-BungieApiRequest -Uri $inventoryUri -RequireAuth -UseSessionToken
-                
-                # Parse character info
-                $className = switch ($char.classType) {
-                    0 { "Titan" }
-                    1 { "Hunter" }
-                    2 { "Warlock" }
-                    default { "Unknown" }
+                try {
+                    
+                    $charEquipAndInv = Get-CharacterEquipmentAndInventory -MembershipType $membership.membershipType -MembershipId $membership.membershipId -CharacterId $characterId
+                    
+                    # Store character data with proper metadata
+                    $charMetadata = $charactersResponse.characters.data.$characterId
+                    $characterData += @{
+                        CharacterId = $characterId
+                        Class = Get-CharacterClassName -ClassType $charMetadata.classType
+                        Race = Get-CharacterRaceName -RaceType $charMetadata.raceType
+                        Gender = Get-CharacterGenderName -GenderType $charMetadata.genderType
+                        Light = $charMetadata.light
+                        Level = $charMetadata.levelProgression.level
+                        EmblemPath = $charMetadata.emblemPath
+                        LastPlayed = if ($charMetadata.dateLastPlayed) {
+                            try {
+                                [DateTime]::ParseExact($charMetadata.dateLastPlayed, "MM/dd/yyyy HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)
+                            } catch {
+                                try {
+                                    [DateTime]::Parse($charMetadata.dateLastPlayed, [System.Globalization.CultureInfo]::InvariantCulture)
+                                } catch {
+                                    Write-Warning "Could not parse dateLastPlayed '$($charMetadata.dateLastPlayed)' for character, using current time"
+                                    [DateTime]::Now
+                                }
+                            }
+                        } else { [DateTime]::Now }
+                        Character = $charMetadata
+                        Equipment = $charEquipAndInv.equipment
+                        Inventory = $charEquipAndInv.inventory
+                        ItemInstances = $charEquipAndInv.itemComponents.instances.data
+                        ItemStats = $charEquipAndInv.itemComponents.stats.data
+                    }
                 }
-
-                $LastPlayed = try {
-                    [DateTime]::ParseExact($char.dateLastPlayed, "MM/dd/yyyy HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)
-                } catch {
-                    [DateTime]::Now
+                catch {
+                    Write-Warning "Failed to get data for character $characterId : $_"
                 }
-                
-                $characterInfo = @{
-                    CharacterId = $characterId
-                    Class = $className
-                    Light = $char.light
-                    Race = switch ($char.raceType) { 0 { "Human" } 1 { "Awoken" } 2 { "Exo" } default { "Unknown" } }
-                    Gender = switch ($char.genderType) { 0 { "Male" } 1 { "Female" } default { "Unknown" } }
-                    LastPlayed = $LastPlayed
-                    EquipmentData = $equipmentData
-                    InventoryData = $inventoryData
-                }
-                
-                $characterData += $characterInfo
-                
-                Write-Host "  $className - Light $($char.light)" -ForegroundColor Green
             }
         }
         
@@ -373,9 +389,11 @@ function Get-AllCharacterInventories {
         Write-Host "Getting vault data..." -ForegroundColor Yellow
         $vaultUri = "https://www.bungie.net/Platform/Destiny2/$($membership.membershipType)/Profile/$($membership.membershipId)/?components=102,300,304"
         $vaultData = Invoke-BungieApiRequest -Uri $vaultUri -RequireAuth -UseSessionToken
+
+
+
         
-        # Return organized data
-        # Consolidate all the separate API responses into the expected ProfileData format
+        # INITIALIZE CONSOLIDATED DATA STRUCTURE FIRST
         $consolidatedProfileData = @{
             characterEquipment = @{ data = @{} }
             characterInventories = @{ data = @{} }
@@ -384,36 +402,85 @@ function Get-AllCharacterInventories {
             profileInventory = $vaultData.profileInventory
         }
 
-        # Merge all character equipment and inventory data
+
         foreach ($char in $characterData) {
             $charId = $char.CharacterId
             
-            if ($char.EquipmentData.equipment) {
-                $consolidatedProfileData.characterEquipment.data[$charId] = $char.EquipmentData.equipment
+            try {
+                # Equipment
+                if (($null -ne $char.Equipment) -and ($null -ne $char.Equipment.data)) {
+                    $consolidatedProfileData.characterEquipment.data[$charId] = $char.Equipment.data
+                }
+
+                # Inventory
+                if (($null -ne $char.Inventory) -and ($null -ne $char.Inventory.data)) {
+                    $consolidatedProfileData.characterInventories.data[$charId] = $char.Inventory.data
+                }
+
+                # ItemInstances using Get-Member approach
+                if ($null -ne $char.ItemInstances) {
+                    $instanceKeys = @()
+                    try {
+                        $instanceKeys = $char.ItemInstances | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                        foreach ($key in $instanceKeys) {
+                            $consolidatedProfileData.itemInstances.data[$key] = $char.ItemInstances.$key
+                        }
+                    } catch {
+                        # Silently skip on error
+                    }
+                }
+
+                # ItemStats using Get-Member approach
+                if ($null -ne $char.ItemStats) {
+                    try {
+                        $statKeys = $char.ItemStats | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                        foreach ($key in $statKeys) {
+                            $consolidatedProfileData.itemStats.data[$key] = $char.ItemStats.$key
+                        }
+                    } catch {
+                        # Silently skip on error
+                    }
+                }
+            } catch {
+                Write-Warning "Failed to process character ${charId}: $($_.Exception.Message)"
             }
-            
-            if ($char.InventoryData.inventory) {
-                $consolidatedProfileData.characterInventories.data[$charId] = $char.InventoryData.inventory
+        }
+
+        # Add vault item instances and stats using Get-Member approach
+        if ($null -ne $vaultData.itemComponents) {
+            if ($null -ne $vaultData.itemComponents.instances.data) {
+                try {
+                    $vaultInstanceKeys = $vaultData.itemComponents.instances.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                    foreach ($key in $vaultInstanceKeys) {
+                        $consolidatedProfileData.itemInstances.data[$key] = $vaultData.itemComponents.instances.data.$key
+                    }
+                } catch {
+                    Write-Warning "Error processing vault instances: $($_.Exception.Message)"
+                }
             }
-            
-            # Merge item instances and stats from all characters
-            if ($char.EquipmentData.itemInstances) {
-                foreach ($key in $char.EquipmentData.itemInstances.data.Keys) {
-                    $consolidatedProfileData.itemInstances.data[$key] = $char.EquipmentData.itemInstances.data[$key]
+            if ($null -ne $vaultData.itemComponents.stats.data) {
+                try {
+                    $vaultStatKeys = $vaultData.itemComponents.stats.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                    foreach ($key in $vaultStatKeys) {
+                        $consolidatedProfileData.itemStats.data[$key] = $vaultData.itemComponents.stats.data.$key
+                    }
+                } catch {
+                    Write-Warning "Error processing vault stats: $($_.Exception.Message)"
                 }
             }
         }
+
+        # Get manifest
+        $manifest = Get-DestinyManifest
 
         # Return in the expected format
         return @{
             Membership = $membership
             Characters = $characterData
-            ProfileData = $consolidatedProfileData  # This is what Format-GearForLLM needs
+            ProfileData = $consolidatedProfileData
             Manifest = $manifest
         }
     }
-
-    
     catch {
         Write-Error "Failed to get character inventories: $($_.Exception.Message)"
         throw
@@ -451,22 +518,27 @@ function Get-CharacterDetails {
         [string]$MembershipId
     )
     
-    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/?components=100,102"
+    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/?components=200"
     $response = Invoke-BungieApiRequest -Uri $uri -RequireAuth -UseSessionToken
     return $response
 }
 
-function Get-CharacterDetails {
+function Get-CharacterEquipmentAndInventory {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
         [int]$MembershipType,
         
         [Parameter(Mandatory=$true)]
-        [string]$MembershipId
+        [string]$MembershipId,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$CharacterId
     )
     
-    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/?components=200"
+    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/Character/$CharacterId/?components=201,205,300,304"
     $response = Invoke-BungieApiRequest -Uri $uri -RequireAuth -UseSessionToken
+
+
     return $response
 }

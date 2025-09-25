@@ -198,6 +198,8 @@ function Get-CachedBungieToken {
                 return $null
             }
         }
+
+        return $tokenInfo
     }
     catch {
         Write-Warning "Failed to load cached token: $($_.Exception.Message)"
@@ -235,15 +237,10 @@ function Invoke-BungieApiRequest {
     param(
         [Parameter(Mandatory=$true)]
         [string]$Uri,
-        
         [string]$Method = "GET",
-        
         [hashtable]$Body,
-        
         [switch]$RequireAuth,
-        
-        [switch]$UseSessionToken,  # Add this parameter
-        
+        [switch]$UseSessionToken,
         [int]$MaxRetries = 2
     )
     
@@ -259,13 +256,12 @@ function Invoke-BungieApiRequest {
             # Add authentication if required
             if ($RequireAuth) {
                 if ($UseSessionToken) {
-                    # Use session token (preferred)
                     $token = Get-SessionToken
                     if (-not $token) {
                         throw "No session token available. Initialize session first."
                     }
                 } else {
-                    # Fall back to individual token retrieval (old method)
+                    # Fall back to individual token retrieval
                     if ($attempt -gt 1) {
                         Write-Host "Attempt $attempt - forcing fresh authentication..." -ForegroundColor Yellow
                         $cacheFile = "../Data/bungie_token.json"
@@ -281,7 +277,6 @@ function Invoke-BungieApiRequest {
                 Write-Verbose "Token expires at: $($token.ExpiresAt)"
             }
             
-            # Rest of the function stays the same...
             $requestParams = @{
                 Uri = $Uri
                 Method = $Method

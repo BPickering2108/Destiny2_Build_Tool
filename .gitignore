@@ -8,10 +8,10 @@ Data/bungie_token.json
 secrets/
 credentials/
 
-# Large files
-Data/manifest.json
-Scripts/Data/manifest.json
+# Large Files
+manifest.json
 
-# Individual files
-gear*
-*gear.json
+# Personalised data
+Data/
+*_gear.json
+gear_collection.*

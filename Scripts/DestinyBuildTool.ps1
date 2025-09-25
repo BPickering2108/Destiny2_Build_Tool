@@ -77,14 +77,14 @@ function Start-DestinyBuildTool {
             return
         }
 
-        # Add this to the beginning of Start-DestinyBuildTool after environment validation:
-        Write-Host "Checking for cached authentication..." -ForegroundColor Yellow
-        $existingToken = Get-CachedBungieToken
-        if ($existingToken) {
-            Write-Host "Found valid cached token - skipping initial authentication" -ForegroundColor Green
-            $script:SessionToken = $existingToken
-        } else {
-            Write-Host "No valid cached token found" -ForegroundColor Gray
+        # Initialize session properly - let the auth system handle caching
+        Write-Host "Initializing authentication session..." -ForegroundColor Yellow
+        try {
+            Initialize-BungieSession | Out-Null
+            Write-Host "Session initialized successfully" -ForegroundColor Green
+        } catch {
+            Write-Host "Session initialization failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Authentication may be required on first API call" -ForegroundColor Yellow
         }
         
         # Handle command line options
@@ -129,8 +129,7 @@ function Test-APIConnection {
         Write-Host "Unauthenticated API access working" -ForegroundColor Green
         Write-Host "   Current game version: $($manifest.version)" -ForegroundColor Gray
         
-        # Initialize session and test authenticated endpoint
-        Initialize-BungieSession | Out-Null
+        # Test authenticated endpoint (session already initialized)
         $user = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/User/GetMembershipsForCurrentUser/" -RequireAuth -UseSessionToken
         Write-Host "Authenticated API access working" -ForegroundColor Green
         Write-Host "   Found $($user.destinyMemberships.Count) Destiny membership(s)" -ForegroundColor Gray
@@ -160,6 +159,7 @@ function Get-FullGearCollection {
         foreach ($char in $inventoryData.Characters) {
             Write-Host "   - $($char.Class) (Light Level: $($char.Light))" -ForegroundColor Gray
         }
+
         
         # Format gear data
         Write-Host "`n3. Formatting gear data for analysis..." -ForegroundColor Yellow
@@ -175,8 +175,7 @@ function Get-FullGearCollection {
             Write-Host "`n4. Saving gear data..." -ForegroundColor Yellow
             
             if ($SeparateFiles) {
-                # Save individual character files
-                Save-CharacterFiles -InventoryData $inventoryData
+                Save-CharacterFiles -FormattedGearData $gearData
                 Write-Host "   Individual character files saved!" -ForegroundColor Green
                 Write-Host "   - Separate JSON file for each character and vault" -ForegroundColor Gray
             } else {
@@ -308,12 +307,6 @@ function Show-MainMenu {
     Write-Host "6. Clear Authentication Cache" -ForegroundColor White
     Write-Host "q. Quit" -ForegroundColor White
     Write-Host ""
-    Write-Host "Command Line Options:" -ForegroundColor DarkGray
-    Write-Host "  -TestConnection      # Test API only" -ForegroundColor DarkGray
-    Write-Host "  -FullCollection      # Get all gear data" -ForegroundColor DarkGray
-    Write-Host "  -SaveData            # Save consolidated files" -ForegroundColor DarkGray
-    Write-Host "  -SeparateFiles       # Save individual character files" -ForegroundColor DarkGray
-    Write-Host ""
 }
 
 # Handle parameters and start application
@@ -325,6 +318,12 @@ if ($SaveData -and !$TestConnection -and !$FullCollection) {
 # Pass the SeparateFiles flag through to functions that need it
 if ($SeparateFiles) {
     $script:UseSeparateFiles = $true
+}
+
+# Delete old files
+$dataFiles = Get-ChildItem -Path "..\Data"
+foreach($file in $dataFiles) {
+    Remove-Item $file -Force
 }
 
 # Start the application
