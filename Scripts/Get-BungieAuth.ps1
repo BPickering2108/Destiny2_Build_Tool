@@ -4,6 +4,8 @@
 [CmdletBinding()]
 param()
 
+$script:SessionToken = $null
+
 # Get configuration from environment variables
 function Get-BungieConfig {
     [CmdletBinding()]
@@ -13,7 +15,7 @@ function Get-BungieConfig {
         ClientId = [System.Environment]::GetEnvironmentVariable('BUNGIE_CLIENT_ID', 'User')
         ClientSecret = [System.Environment]::GetEnvironmentVariable('BUNGIE_CLIENT_SECRET', 'User')  
         RedirectUri = [System.Environment]::GetEnvironmentVariable('BUNGIE_REDIRECT_URI', 'User')
-        ApiKey = [System.Environment]::GetEnvironmentVariable('BUNGIE_API_ID', 'User') # API Key is same as Client ID
+        ApiKey = [System.Environment]::GetEnvironmentVariable('BUNGIE_API_ID', 'User')
     }
     
     # Validate configuration
@@ -144,7 +146,7 @@ function Save-BungieToken {
         # Save with creation time instead of expiration
         $tokenData = $TokenInfo.Clone()
         $tokenData.CreatedAt = (Get-Date).ToString()
-        $tokenData.Remove('ExpiresAt')  # Remove the problematic field
+        $tokenData.Remove('ExpiresAt')
         
         $tokenData | ConvertTo-Json | Out-File -FilePath $cacheFile -Encoding UTF8
         Write-Verbose "Token cached to: $cacheFile"
@@ -170,7 +172,11 @@ function Get-CachedBungieToken {
         $tokenData = Get-Content $cacheFile | ConvertFrom-Json
         
         # Calculate if token is still valid (tokens last 1 hour)
-        $createdAt = [DateTime]$tokenData.CreatedAt
+        try {
+            $createdAt = [DateTime]::Parse($tokenData.CreatedAt)
+        } catch {
+            $createdAt = [DateTime]::ParseExact($tokenData.CreatedAt, "dd/MM/yyyy HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)
+        }
         $expiresAt = $createdAt.AddHours(1)
         
         $tokenInfo = @{
@@ -178,17 +184,19 @@ function Get-CachedBungieToken {
             RefreshToken = $tokenData.RefreshToken  
             TokenType = $tokenData.TokenType
             ExpiresIn = $tokenData.ExpiresIn
-            ExpiresAt = $expiresAt
             Scope = $tokenData.Scope
         }
         
         # Check if token is still valid (with 5 minute buffer)
-        if ($expiresAt -gt (Get-Date).AddMinutes(5)) {
-            Write-Verbose "Using cached token (expires at: $expiresAt)"
-            return $tokenInfo
-        } else {
-            Write-Verbose "Cached token has expired"
-            return $null
+        if ($expiresAt -le (Get-Date).AddMinutes(5)) {
+            Write-Verbose "Token expired, attempting refresh..."
+            $refreshedToken = Update-BungieToken -RefreshToken $tokenData.RefreshToken
+            if ($refreshedToken) {
+                return $refreshedToken
+            } else {
+                Write-Verbose "Refresh failed, cached token expired"
+                return $null
+            }
         }
     }
     catch {
@@ -221,7 +229,7 @@ function Get-ValidBungieToken {
     return $tokenInfo
 }
 
-# Enhanced API request with 500 retry logic
+# Connect to Bungie API
 function Invoke-BungieApiRequest {
     [CmdletBinding()]
     param(
@@ -233,6 +241,8 @@ function Invoke-BungieApiRequest {
         [hashtable]$Body,
         
         [switch]$RequireAuth,
+        
+        [switch]$UseSessionToken,  # Add this parameter
         
         [int]$MaxRetries = 2
     )
@@ -248,23 +258,30 @@ function Invoke-BungieApiRequest {
             
             # Add authentication if required
             if ($RequireAuth) {
-                # Force new token on retry attempts
-                if ($attempt -gt 1) {
-                    Write-Host "Attempt $attempt - forcing fresh authentication..." -ForegroundColor Yellow
-                    # Clear cache to force new token
-                    $cacheFile = "../Data/bungie_token.json"
-                    if (Test-Path $cacheFile) {
-                        Remove-Item $cacheFile -Force
+                if ($UseSessionToken) {
+                    # Use session token (preferred)
+                    $token = Get-SessionToken
+                    if (-not $token) {
+                        throw "No session token available. Initialize session first."
                     }
+                } else {
+                    # Fall back to individual token retrieval (old method)
+                    if ($attempt -gt 1) {
+                        Write-Host "Attempt $attempt - forcing fresh authentication..." -ForegroundColor Yellow
+                        $cacheFile = "../Data/bungie_token.json"
+                        if (Test-Path $cacheFile) {
+                            Remove-Item $cacheFile -Force
+                        }
+                    }
+                    $token = Get-ValidBungieToken
                 }
                 
-                $token = Get-ValidBungieToken
                 $headers['Authorization'] = "$($token.TokenType) $($token.AccessToken)"
                 Write-Verbose "Using token type: $($token.TokenType)"
                 Write-Verbose "Token expires at: $($token.ExpiresAt)"
             }
             
-            # Prepare request parameters
+            # Rest of the function stays the same...
             $requestParams = @{
                 Uri = $Uri
                 Method = $Method
@@ -280,7 +297,6 @@ function Invoke-BungieApiRequest {
             Write-Verbose "Making API request to: $Uri (attempt $attempt)"
             $response = Invoke-RestMethod @requestParams
             
-            # Check Bungie API response format
             if ($response.ErrorCode -ne 1) {
                 throw "Bungie API error: $($response.Message) (Code: $($response.ErrorCode))"
             }
@@ -312,32 +328,109 @@ function Test-BungieApiConnection {
         Write-Host "Testing Bungie API connection..." -ForegroundColor Green
         
         # Test unauthenticated endpoint
-        Write-Verbose "Testing unauthenticated endpoint..."
         $manifest = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/Destiny2/Manifest/"
         Write-Host "Unauthenticated API access working" -ForegroundColor Green
         Write-Host "   Current game version: $($manifest.version)" -ForegroundColor Gray
         
-        # Test authenticated endpoint
-        Write-Verbose "Testing authenticated endpoint..."
-        $user = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/User/GetMembershipsForCurrentUser/" -RequireAuth
+        # Initialize session ONCE
+        Initialize-BungieSession | Out-Null
+        
+        # Test authenticated endpoint using session token
+        $user = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/User/GetMembershipsForCurrentUser/" -RequireAuth -UseSessionToken
         Write-Host "Authenticated API access working" -ForegroundColor Green
         Write-Host "   Found $($user.destinyMemberships.Count) Destiny membership(s)" -ForegroundColor Gray
         return $user
     }
     catch {
         Write-Host "API connection test failed: $($_.Exception.Message)" -ForegroundColor Red
-        
-        if ($_.Exception.Message -like "*500*") {
-            Write-Host "   If you're getting 500 errors, check that Bearer tokens aren't being URL encoded" -ForegroundColor Yellow
-        }
-        
-        # Additional debugging info
-        Write-Verbose "Full exception details:"
-        Write-Verbose "Type: $($_.Exception.GetType().FullName)"
-        Write-Verbose "Message: $($_.Exception.Message)"
-        if ($_.Exception.InnerException) {
-            Write-Verbose "Inner exception: $($_.Exception.InnerException.Message)"
-        }
         throw
+    }
+}
+
+# Get token once and store in session
+function Initialize-BungieSession {
+    [CmdletBinding()]
+    param()
+    
+    Write-Host "Initializing Bungie API session..." -ForegroundColor Green
+    
+    # Try cached token first
+    $cachedToken = Get-CachedBungieToken
+    if ($cachedToken) {
+        Write-Host "Using cached authentication token" -ForegroundColor Green
+        $script:SessionToken = $cachedToken
+        return $cachedToken
+    }
+    
+    # Need new token
+    Write-Host "Getting new authentication token..." -ForegroundColor Yellow
+    $authCode = Start-BungieOAuth
+    $tokenInfo = Get-BungieAccessToken -AuthorizationCode $authCode
+    
+    # Store in session
+    $script:SessionToken = $tokenInfo
+    Write-Host "Bungie API session initialized successfully" -ForegroundColor Green
+    
+    return $tokenInfo
+}
+
+# Get session token (no additional auth required)
+function Get-SessionToken {
+    [CmdletBinding()]
+    param()
+    
+    if ($script:SessionToken) {
+        # Check if still valid
+        if ($script:SessionToken.ExpiresAt -gt (Get-Date).AddMinutes(5)) {
+            return $script:SessionToken
+        } else {
+            Write-Verbose "Session token expired, clearing"
+            $script:SessionToken = $null
+        }
+    }
+    
+    Write-Warning "No valid session token available. Call Initialize-BungieSession first."
+    return $null
+}
+
+function Update-BungieToken {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$RefreshToken
+    )
+    
+    try {
+        $config = Get-BungieConfig
+        Write-Host "Refreshing access token..." -ForegroundColor Yellow
+        
+        $tokenUrl = "https://www.bungie.net/platform/app/oauth/token/"
+        $headers = @{
+            'Content-Type' = 'application/x-www-form-urlencoded'
+            'X-API-Key' = $config.ApiKey
+        }
+        
+        $bodyString = "grant_type=refresh_token&refresh_token=$([uri]::EscapeDataString($RefreshToken))"
+        $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $bodyString -Headers $headers
+        
+        if ($response.access_token) {
+            $expiresAt = (Get-Date).AddSeconds($response.expires_in)
+            
+            $tokenInfo = @{
+                AccessToken = $response.access_token
+                RefreshToken = $response.refresh_token
+                TokenType = $response.token_type
+                ExpiresIn = $response.expires_in
+                ExpiresAt = $expiresAt
+                Scope = $response.scope
+            }
+            
+            Save-BungieToken $tokenInfo
+            return $tokenInfo
+        }
+    }
+    catch {
+        Write-Warning "Failed to refresh token: $($_.Exception.Message)"
+        return $null
     }
 }

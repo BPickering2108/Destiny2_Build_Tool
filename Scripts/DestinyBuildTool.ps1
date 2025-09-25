@@ -7,10 +7,19 @@ param(
     [switch]$TestConnection,
     
     [Parameter(HelpMessage="Force re-authentication")]
-    [switch]$ForceAuth
+    [switch]$ForceAuth,
+
+    [Parameter(HelpMessage="Save gear data to files")]
+    [switch]$SaveData,
+
+    [Parameter(HelpMessage="Skip interactive menu and run full collection")]
+    [switch]$FullCollection,
+
+    [Parameter(HelpMessage="Save individual character files instead of consolidated")]
+    [switch]$SeparateFiles
 )
 
-# Dot-source Bungie authentication script
+# Import required scripts
 try {
     . "$PSScriptRoot\get-bungieauth.ps1"
     Write-Host "Loaded Bungie Authentication Script" -ForegroundColor Green
@@ -19,13 +28,22 @@ catch {
     Write-Error "Failed to load Bungie authentication script: $($_.Exception.Message)"
     exit 1
 }
-# Dot-source API test connection script
+
 try {
-    . "$PSScriptRoot\test-destinyapi.ps1"
-    Write-Host "Loaded Bungie Authentication Script" -ForegroundColor Green
+    . "$PSScriptRoot\Get-DestinyInventory.ps1"
+    Write-Host "Loaded Destiny Inventory Script" -ForegroundColor Green
 }
 catch {
-    Write-Error "Failed to load Bungie authentication script: $($_.Exception.Message)"
+    Write-Error "Failed to load Destiny inventory script: $($_.Exception.Message)"
+    exit 1
+}
+
+try {
+    . "$PSScriptRoot\Format-GearData.ps1"
+    Write-Host "Loaded Gear Formatting Script" -ForegroundColor Green
+}
+catch {
+    Write-Error "Failed to load gear formatting script: $($_.Exception.Message)"
     exit 1
 }
 
@@ -55,74 +73,223 @@ function Start-DestinyBuildTool {
             Write-Host "  - BUNGIE_CLIENT_ID" -ForegroundColor Gray
             Write-Host "  - BUNGIE_CLIENT_SECRET" -ForegroundColor Gray  
             Write-Host "  - BUNGIE_REDIRECT_URI" -ForegroundColor Gray
+            Write-Host "  - BUNGIE_API_ID" -ForegroundColor Gray
+            return
+        }
+
+        # Add this to the beginning of Start-DestinyBuildTool after environment validation:
+        Write-Host "Checking for cached authentication..." -ForegroundColor Yellow
+        $existingToken = Get-CachedBungieToken
+        if ($existingToken) {
+            Write-Host "Found valid cached token - skipping initial authentication" -ForegroundColor Green
+            $script:SessionToken = $existingToken
+        } else {
+            Write-Host "No valid cached token found" -ForegroundColor Gray
+        }
+        
+        # Handle command line options
+        if ($TestConnection) {
+            Test-APIConnection
             return
         }
         
-        # Test connection
-        if ($TestConnection) {
-            Start-DestinyAPITest
+        if ($FullCollection) {
+            Get-FullGearCollection
             return
         }
         
         # Force re-authentication if requested
         if ($ForceAuth) {
             Write-Host "Forcing re-authentication..." -ForegroundColor Yellow
-            $cacheFile = "Data/Cache/bungie_token.json"
+            $cacheFile = "../Data/bungie_token.json"
             if (Test-Path $cacheFile) {
                 Remove-Item $cacheFile -Force
                 Write-Host "Cleared cached token" -ForegroundColor Gray
             }
         }
         
-        # Test API connection
-        Write-Host "Testing API connection..." -ForegroundColor Yellow
-        Test-BungieApiConnection
+        # Default: Show interactive menu
+        Show-InteractiveMenu
         
-        # Main menu loop
-        do {
-            Show-MainMenu
-            $choice = Read-Host "`nEnter your choice"
-            
-            switch ($choice) {
-                '1' { 
-                    Write-Host "`nGetting your Destiny 2 inventory..." -ForegroundColor Yellow
-                    Get-PlayerInventory
-                }
-                '2' { 
-                    Write-Host "`nBuild creation coming soon!" -ForegroundColor Yellow
-                    Write-Host "This feature will analyze your gear and create optimal builds." -ForegroundColor Gray
-                }
-                '3' { 
-                    Write-Host "`nTesting API connection..." -ForegroundColor Yellow
-                    Test-BungieApiConnection
-                }
-                '4' { 
-                    Write-Host "`nForcing re-authentication..." -ForegroundColor Yellow
-                    $cacheFile = "Data/Cache/bungie_token.json"
-                    if (Test-Path $cacheFile) { Remove-Item $cacheFile -Force }
-                    Test-BungieApiConnection
-                }
-                'q' { 
-                    Write-Host "`nGoodbye! Eyes up, Guardian!" -ForegroundColor Cyan
-                    return
-                }
-                default { 
-                    Write-Host "Invalid choice. Please try again." -ForegroundColor Red
-                }
-            }
-            
-            if ($choice -ne 'q') {
-                Write-Host "`nPress any key to continue..." -ForegroundColor Gray
-                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-            }
-            
-        } while ($choice -ne 'q')
     }
     catch {
         Write-Error "Application error: $($_.Exception.Message)"
         Write-Host "Stack trace:" -ForegroundColor Red
         Write-Host $_.ScriptStackTrace -ForegroundColor Gray
     }
+}
+
+# Test API connection function
+function Test-APIConnection {
+    Write-Host "Testing Destiny 2 API connection..." -ForegroundColor Yellow
+    
+    try {
+        # Test unauthenticated endpoint
+        $manifest = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/Destiny2/Manifest/"
+        Write-Host "Unauthenticated API access working" -ForegroundColor Green
+        Write-Host "   Current game version: $($manifest.version)" -ForegroundColor Gray
+        
+        # Initialize session and test authenticated endpoint
+        Initialize-BungieSession | Out-Null
+        $user = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/User/GetMembershipsForCurrentUser/" -RequireAuth -UseSessionToken
+        Write-Host "Authenticated API access working" -ForegroundColor Green
+        Write-Host "   Found $($user.destinyMemberships.Count) Destiny membership(s)" -ForegroundColor Gray
+        
+        Write-Host "API connection test completed successfully!" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "API connection test failed: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
+}
+
+# Get full gear collection function
+function Get-FullGearCollection {
+    Write-Host "Starting full Destiny 2 gear collection..." -ForegroundColor Cyan
+    
+    try {
+        # Test connection first
+        Write-Host "1. Testing API connection..." -ForegroundColor Yellow
+        Test-APIConnection
+        
+        # Get character inventories
+        Write-Host "`n2. Retrieving character inventories..." -ForegroundColor Yellow
+        $inventoryData = Get-AllCharacterInventories
+        
+        Write-Host "   Found $($inventoryData.Characters.Count) character(s)" -ForegroundColor Green
+        foreach ($char in $inventoryData.Characters) {
+            Write-Host "   - $($char.Class) (Light Level: $($char.Light))" -ForegroundColor Gray
+        }
+        
+        # Format gear data
+        Write-Host "`n3. Formatting gear data for analysis..." -ForegroundColor Yellow
+        $gearData = Format-GearForLLM -InventoryData $inventoryData
+        
+        Write-Host "   Total items processed: $($gearData.Summary.TotalItems)" -ForegroundColor Green
+        Write-Host "   - Weapons: $($gearData.Summary.WeaponCount)" -ForegroundColor Gray
+        Write-Host "   - Armor: $($gearData.Summary.ArmorCount)" -ForegroundColor Gray
+        Write-Host "   - Exotics: $($gearData.Summary.ExoticCount)" -ForegroundColor Gray
+        
+        # Save data if requested
+        if ($SaveData) {
+            Write-Host "`n4. Saving gear data..." -ForegroundColor Yellow
+            
+            if ($SeparateFiles) {
+                # Save individual character files
+                Save-CharacterFiles -InventoryData $inventoryData
+                Write-Host "   Individual character files saved!" -ForegroundColor Green
+                Write-Host "   - Separate JSON file for each character and vault" -ForegroundColor Gray
+            } else {
+                # Save consolidated file
+                $savedPath = Save-GearData -GearData $gearData -IncludeTextFormat
+                Write-Host "   Consolidated data saved!" -ForegroundColor Green
+                Write-Host "   - JSON format: $savedPath" -ForegroundColor Gray
+                Write-Host "   - Text format: $($savedPath -replace '\.json$', '.txt')" -ForegroundColor Gray
+            }
+        }
+        
+        # Generate sample output
+        Write-Host "`n5. Generating analysis-ready text..." -ForegroundColor Yellow
+        $textOutput = Convert-GearToText -GearData $gearData
+        $lines = ($textOutput -split "`n").Count
+        Write-Host "   Generated $lines lines of structured text" -ForegroundColor Green
+        
+        # Show sample
+        Write-Host "`nSample gear data:" -ForegroundColor Cyan
+        ($textOutput -split "`n")[0..15] | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        if ($lines -gt 15) {
+            Write-Host "   ... (truncated, $($lines - 15) more lines available)" -ForegroundColor DarkGray
+        }
+        
+        Write-Host "`nGear collection completed successfully!" -ForegroundColor Green
+        Write-Host "Your Destiny 2 gear data is ready for LLM analysis and build creation." -ForegroundColor Cyan
+        
+        if (!$SaveData) {
+            Write-Host "`nTip: Run with -SaveData to save your gear data to files for future use." -ForegroundColor Yellow
+        }
+        
+        return $gearData
+    }
+    catch {
+        Write-Host "Failed to complete gear collection: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
+}
+
+# Interactive menu system
+function Show-InteractiveMenu {
+    do {
+        Show-MainMenu
+        $choice = Read-Host "`nEnter your choice"
+        
+        switch ($choice) {
+            '1' { 
+                Write-Host "`nTesting API connection..." -ForegroundColor Yellow
+                try {
+                    Test-APIConnection
+                }
+                catch {
+                    Write-Host "Connection test failed." -ForegroundColor Red
+                }
+            }
+            '2' { 
+                Write-Host "`nGetting your Destiny 2 gear collection..." -ForegroundColor Yellow
+                try {
+                    Get-FullGearCollection
+                }
+                catch {
+                    Write-Host "Gear collection failed." -ForegroundColor Red
+                }
+            }
+            '3' { 
+                Write-Host "`nGetting and saving your Destiny 2 gear collection..." -ForegroundColor Yellow
+                try {
+                    $script:SaveData = $true
+                    Get-FullGearCollection
+                }
+                catch {
+                    Write-Host "Gear collection failed." -ForegroundColor Red
+                }
+                finally {
+                    $script:SaveData = $false
+                }
+            }
+            '4' { 
+                Write-Host "`nGetting and saving individual character files..." -ForegroundColor Yellow
+                try {
+                    $script:SaveData = $true
+                    $script:SeparateFiles = $true
+                    Get-FullGearCollection
+                }
+                catch {
+                    Write-Host "Gear collection failed." -ForegroundColor Red
+                }
+                finally {
+                    $script:SaveData = $false
+                    $script:SeparateFiles = $false
+                }
+            }
+            '5' { 
+                Write-Host "`nBuild creation and analysis coming soon!" -ForegroundColor Yellow
+            }
+            '6' { 
+                Write-Host "`nForcing re-authentication..." -ForegroundColor Yellow
+            }
+            'q' { 
+                Write-Host "`nGoodbye! Eyes up, Guardian!" -ForegroundColor Cyan
+                return
+            }
+            default { 
+                Write-Host "Invalid choice. Please try again." -ForegroundColor Red
+            }
+        }
+        
+        if ($choice -ne 'q') {
+            Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
+        
+    } while ($choice -ne 'q')
 }
 
 # Display main menu
@@ -133,43 +300,32 @@ function Show-MainMenu {
     Write-Host "    Destiny 2 Build Tool v1.0     " -ForegroundColor Cyan  
     Write-Host "==================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "1. View Inventory & Vault" -ForegroundColor White
-    Write-Host "2. Create Build (Coming Soon)" -ForegroundColor White
-    Write-Host "3. Test API Connection" -ForegroundColor White
-    Write-Host "4. Re-authenticate" -ForegroundColor White
+    Write-Host "1. Test API Connection" -ForegroundColor White
+    Write-Host "2. Get Gear Collection" -ForegroundColor White
+    Write-Host "3. Get Gear Collection + Save Consolidated Data" -ForegroundColor White
+    Write-Host "4. Get Gear Collection + Save Individual Files" -ForegroundColor White
+    Write-Host "5. AI Build Analysis (Coming Soon)" -ForegroundColor White
+    Write-Host "6. Clear Authentication Cache" -ForegroundColor White
     Write-Host "q. Quit" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Command Line Options:" -ForegroundColor DarkGray
+    Write-Host "  -TestConnection      # Test API only" -ForegroundColor DarkGray
+    Write-Host "  -FullCollection      # Get all gear data" -ForegroundColor DarkGray
+    Write-Host "  -SaveData            # Save consolidated files" -ForegroundColor DarkGray
+    Write-Host "  -SeparateFiles       # Save individual character files" -ForegroundColor DarkGray
     Write-Host ""
 }
 
-# Placeholder for inventory function (we'll build this next)
-function Get-PlayerInventory {
-    Write-Host "Getting your Destiny 2 characters and inventory..." -ForegroundColor Green
-    
-    try {
-        # Get user memberships first
-        $user = Invoke-BungieApiRequest -Uri "https://www.bungie.net/Platform/User/GetMembershipsForCurrentUser/" -RequireAuth
-        
-        if ($user.destinyMemberships.Count -eq 0) {
-            Write-Host "No Destiny 2 characters found on this account" -ForegroundColor Red
-            return
-        }
-        
-        # Show available memberships
-        Write-Host "`nFound Destiny 2 account(s):" -ForegroundColor Yellow
-        for ($i = 0; $i -lt $user.destinyMemberships.Count; $i++) {
-            $membership = $user.destinyMemberships[$i]
-            Write-Host "  $($i + 1). $($membership.displayName) ($($membership.membershipType))" -ForegroundColor Gray
-        }
-        
-        Write-Host "`nSuccessfully connected to Destiny 2 API!" -ForegroundColor Green
-        Write-Host "Next: We'll implement character and inventory data retrieval" -ForegroundColor Cyan
-    }
-    catch {
-        Write-Host "❌ Failed to get inventory: $($_.Exception.Message)" -ForegroundColor Red
-    }
+# Handle parameters and start application
+if ($SaveData -and !$TestConnection -and !$FullCollection) {
+    # If only -SaveData is specified, assume -FullCollection
+    $FullCollection = $true
+}
+
+# Pass the SeparateFiles flag through to functions that need it
+if ($SeparateFiles) {
+    $script:UseSeparateFiles = $true
 }
 
 # Start the application
-if ($MyInvocation.InvocationName -eq $MyInvocation.MyCommand.Name) {
-    Start-DestinyBuildTool
-}
+Start-DestinyBuildTool

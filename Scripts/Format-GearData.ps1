@@ -16,9 +16,9 @@ function Format-EquippedGear {
         [string]$CharacterId,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$Manifest = $null
+        [PSCustomObject]$Manifest = $null
     )
     
     $equippedGear = @()
@@ -45,9 +45,9 @@ function Format-CharacterInventory {
         [string]$CharacterId,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$Manifest = $null
+        [PSCustomObject]$Manifest = $null
     )
     
     $inventoryGear = @()
@@ -71,9 +71,9 @@ function Format-VaultInventory {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$Manifest = $null
+        [PSCustomObject]$Manifest = $null
     )
     
     $vaultGear = @()
@@ -97,12 +97,12 @@ function Format-GearItem {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$Item,
+        [PSCustomObject]$Item,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$Manifest = $null,
+        [PSCustomObject]$Manifest = $null,
         
         [string]$Location = "Unknown"
     )
@@ -129,6 +129,11 @@ function Format-GearItem {
         
         # Skip non-gear items
         if ($category -notin @("Weapon", "Armor")) {
+            return $null
+        }
+
+        if (!$Item.itemInstanceId) {
+            Write-Verbose "Skipping item $($Item.itemHash) - no instance ID"
             return $null
         }
         
@@ -173,7 +178,7 @@ function Get-ItemCategory {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$ItemDef
+        [PSCustomObject]$ItemDef
     )
     
     if ($ItemDef.itemCategoryHashes) {
@@ -210,7 +215,7 @@ function Get-ItemTier {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$ItemDef
+        [PSCustomObject]$ItemDef
     )
     
     switch ($ItemDef.inventory.tierType) {
@@ -226,8 +231,8 @@ function Get-ItemTier {
 function Get-ItemElement {
     [CmdletBinding()]
     param(
-        [hashtable]$InstanceData,
-        [hashtable]$ItemDef
+        [PSCustomObject]$InstanceData,
+        [PSCustomObject]$ItemDef
     )
     
     if ($InstanceData -and $InstanceData.damageType) {
@@ -263,12 +268,12 @@ function Get-ItemSockets {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$Item,
+        [PSCustomObject]$Item,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$Manifest = $null
+        [PSCustomObject]$Manifest = $null
     )
     
     $sockets = @()
@@ -308,12 +313,12 @@ function Get-ItemStats {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$Item,
+        [PSCustomObject]$Item,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$ItemDef
+        [PSCustomObject]$ItemDef
     )
     
     $stats = @{}
@@ -352,12 +357,12 @@ function Get-ItemMasterwork {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$Item,
+        [PSCustomObject]$Item,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$ProfileData,
+        [PSCustomObject]$ProfileData,
         
-        [hashtable]$ItemDef
+        [PSCustomObject]$ItemDef
     )
     
     # Check if item has masterwork
@@ -381,7 +386,7 @@ function Format-GearForLLM {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$InventoryData
+        [PSCustomObject]$InventoryData
     )
     
     try {
@@ -470,7 +475,7 @@ function Convert-GearToText {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$GearData,
+        [PSCustomObject]$GearData,
         
         [switch]$IncludeDetails
     )
@@ -582,7 +587,7 @@ function Save-GearData {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [hashtable]$GearData,
+        [PSCustomObject]$GearData,
         
         [string]$OutputPath = "Data/gear_collection.json",
         
@@ -644,4 +649,24 @@ function Get-FormattedGearCollection {
         Write-Error "Failed to get formatted gear collection: $($_.Exception.Message)"
         throw
     }
+}
+
+function Save-CharacterFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$InventoryData
+    )
+    
+    # Save individual character files
+    foreach ($character in $InventoryData.Characters) {
+        $fileName = "../Data/$($character.Class)_$($character.CharacterId)_gear.json"
+        $character | ConvertTo-Json -Depth 10 | Out-File -FilePath $fileName -Encoding UTF8
+        Write-Host "Saved: $fileName" -ForegroundColor Green
+    }
+    
+    # Save vault file
+    $vaultFile = "../Data/vault_gear.json"
+    $InventoryData.VaultData | ConvertTo-Json -Depth 10 | Out-File -FilePath $vaultFile -Encoding UTF8
+    Write-Host "Saved: $vaultFile" -ForegroundColor Green
 }

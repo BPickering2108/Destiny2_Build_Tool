@@ -11,3 +11,7 @@ credentials/
 # Large files
 Data/manifest.json
 Scripts/Data/manifest.json
+
+# Individual files
+gear*
+*gear.json
