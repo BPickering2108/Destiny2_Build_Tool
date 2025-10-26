@@ -133,12 +133,14 @@ function Get-DestinyManifest {
             }
         }
         
-        # Load manifest into memory (just the definitions we need)
+        # Load manifest into memory with progress tracking
         if (Test-Path $manifestFile) {
             try {
-                Write-Host "Loading manifest definitions..." -ForegroundColor Yellow
-                $manifestData = Get-Content $manifestFile | ConvertFrom-Json
-                
+                Write-Host "Loading manifest definitions (this will take 15-30 seconds)..." -ForegroundColor Yellow
+
+                # Use streaming read for better performance
+                $manifestData = Get-Content $manifestFile -Raw | ConvertFrom-Json
+
                 # Cache key definition tables
                 $script:ManifestCache = @{
                     InventoryItems = $manifestData.DestinyInventoryItemDefinition
@@ -147,16 +149,26 @@ function Get-DestinyManifest {
                     Perks = $manifestData.DestinyInventoryItemDefinition # Perks are items too
                     Version = $manifest.version
                 }
-                
-                Write-Host "Manifest loaded into cache" -ForegroundColor Green
+
+                Write-Host "Manifest loaded successfully" -ForegroundColor Green
                 return $script:ManifestCache
             }
             catch {
                 Write-Warning "Failed to load manifest: $($_.Exception.Message)"
-                return $null
+                Write-Host "Falling back to API lookups (slower)..." -ForegroundColor Yellow
+
+                $script:ManifestCache = @{
+                    InventoryItems = @{}
+                    Stats = @{}
+                    Sockets = @{}
+                    Perks = @{}
+                    Version = $manifest.version
+                    UseLiveAPI = $true
+                }
+                return $script:ManifestCache
             }
         }
-        
+
         return $null
     }
     catch {
@@ -209,15 +221,22 @@ function Get-ItemDefinition {
         [Parameter(Mandatory=$true)]
         [string]$ItemHash
     )
-    
+
+    # Check cache first
     if ($script:ManifestCache.InventoryItems -and $script:ManifestCache.InventoryItems.$ItemHash) {
         return $script:ManifestCache.InventoryItems.$ItemHash
     }
-    
-    # If not in cache, try direct API call (slower but works)
+
+    # If not in cache, try direct API call and cache the result
     try {
         $uri = "https://www.bungie.net/Platform/Destiny2/Manifest/DestinyInventoryItemDefinition/$ItemHash/"
         $response = Invoke-BungieApiRequest -Uri $uri
+
+        # Cache the result for future use
+        if ($response -and $script:ManifestCache.InventoryItems) {
+            $script:ManifestCache.InventoryItems[$ItemHash] = $response
+        }
+
         return $response
     }
     catch {
@@ -377,6 +396,8 @@ function Get-AllCharacterInventories {
                         Inventory = $charEquipAndInv.inventory
                         ItemInstances = $charEquipAndInv.itemComponents.instances.data
                         ItemStats = $charEquipAndInv.itemComponents.stats.data
+                        ItemSockets = $charEquipAndInv.itemComponents.sockets.data
+                        ItemPerks = $charEquipAndInv.itemComponents.perks.data
                     }
                 }
                 catch {
@@ -387,7 +408,8 @@ function Get-AllCharacterInventories {
         
         # 3. Get vault data separately
         Write-Host "Getting vault data..." -ForegroundColor Yellow
-        $vaultUri = "https://www.bungie.net/Platform/Destiny2/$($membership.membershipType)/Profile/$($membership.membershipId)/?components=102,300,304"
+        # Add 302=ItemPerks, 305=ItemSockets, 310=ItemPlugStates for perks data
+        $vaultUri = "https://www.bungie.net/Platform/Destiny2/$($membership.membershipType)/Profile/$($membership.membershipId)/?components=102,300,302,304,305,310"
         $vaultData = Invoke-BungieApiRequest -Uri $vaultUri -RequireAuth -UseSessionToken
 
 
@@ -399,6 +421,8 @@ function Get-AllCharacterInventories {
             characterInventories = @{ data = @{} }
             itemInstances = @{ data = @{} }
             itemStats = @{ data = @{} }
+            itemSockets = @{ data = @{} }
+            itemPerks = @{ data = @{} }
             profileInventory = $vaultData.profileInventory
         }
 
@@ -441,12 +465,36 @@ function Get-AllCharacterInventories {
                         # Silently skip on error
                     }
                 }
+
+                # ItemSockets using Get-Member approach
+                if ($null -ne $char.ItemSockets) {
+                    try {
+                        $socketKeys = $char.ItemSockets | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                        foreach ($key in $socketKeys) {
+                            $consolidatedProfileData.itemSockets.data[$key] = $char.ItemSockets.$key
+                        }
+                    } catch {
+                        # Silently skip on error
+                    }
+                }
+
+                # ItemPerks using Get-Member approach
+                if ($null -ne $char.ItemPerks) {
+                    try {
+                        $perkKeys = $char.ItemPerks | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                        foreach ($key in $perkKeys) {
+                            $consolidatedProfileData.itemPerks.data[$key] = $char.ItemPerks.$key
+                        }
+                    } catch {
+                        # Silently skip on error
+                    }
+                }
             } catch {
                 Write-Warning "Failed to process character ${charId}: $($_.Exception.Message)"
             }
         }
 
-        # Add vault item instances and stats using Get-Member approach
+        # Add vault item instances, stats, sockets, and perks using Get-Member approach
         if ($null -ne $vaultData.itemComponents) {
             if ($null -ne $vaultData.itemComponents.instances.data) {
                 try {
@@ -466,6 +514,26 @@ function Get-AllCharacterInventories {
                     }
                 } catch {
                     Write-Warning "Error processing vault stats: $($_.Exception.Message)"
+                }
+            }
+            if ($null -ne $vaultData.itemComponents.sockets.data) {
+                try {
+                    $vaultSocketKeys = $vaultData.itemComponents.sockets.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                    foreach ($key in $vaultSocketKeys) {
+                        $consolidatedProfileData.itemSockets.data[$key] = $vaultData.itemComponents.sockets.data.$key
+                    }
+                } catch {
+                    Write-Warning "Error processing vault sockets: $($_.Exception.Message)"
+                }
+            }
+            if ($null -ne $vaultData.itemComponents.perks.data) {
+                try {
+                    $vaultPerkKeys = $vaultData.itemComponents.perks.data | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+                    foreach ($key in $vaultPerkKeys) {
+                        $consolidatedProfileData.itemPerks.data[$key] = $vaultData.itemComponents.perks.data.$key
+                    }
+                } catch {
+                    Write-Warning "Error processing vault perks: $($_.Exception.Message)"
                 }
             }
         }
@@ -536,7 +604,9 @@ function Get-CharacterEquipmentAndInventory {
         [string]$CharacterId
     )
     
-    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/Character/$CharacterId/?components=201,205,300,304"
+    # Components: 201=CharacterInventories, 205=CharacterEquipment,
+    #             300=ItemInstances, 302=ItemPerks, 304=ItemStats, 305=ItemSockets, 310=ItemPlugStates
+    $uri = "https://www.bungie.net/Platform/Destiny2/$MembershipType/Profile/$MembershipId/Character/$CharacterId/?components=201,205,300,302,304,305,310"
     $response = Invoke-BungieApiRequest -Uri $uri -RequireAuth -UseSessionToken
 
 

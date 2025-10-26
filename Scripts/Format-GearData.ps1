@@ -217,14 +217,25 @@ function Get-ItemTier {
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$ItemDef
     )
-    
+
+    # Try tierTypeName first (more reliable)
+    if ($ItemDef.inventory -and $ItemDef.inventory.tierTypeName) {
+        $tierName = $ItemDef.inventory.tierTypeName
+        if ($tierName -match "Exotic") { return "Exotic" }
+        if ($tierName -match "Legendary") { return "Legendary" }
+        if ($tierName -match "Rare") { return "Rare" }
+        if ($tierName -match "Common") { return "Common" }
+    }
+
+    # Fallback to tierType number
     if ($ItemDef.inventory -and $ItemDef.inventory.tierType) {
         switch ($ItemDef.inventory.tierType) {
             2 { return "Common" }
             3 { return "Rare" }
             4 { return "Legendary" }
             5 { return "Exotic" }
-            default { return "Unknown" }
+            6 { return "Exotic" }  # Some exotics might use 6
+            default { return "Unknown ($($ItemDef.inventory.tierType))" }
         }
     }
 
@@ -273,18 +284,25 @@ function Get-ItemSockets {
     param(
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$Item,
-        
+
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$ProfileData,
-        
+
         [PSCustomObject]$Manifest = $null
     )
-    
+
     $sockets = @()
-    
+
+    # List of cosmetic/non-gameplay socket names to filter out
+    $cosmeticFilters = @(
+        "shader", "ornament", "kill tracker", "combat flair",
+        "empty mod socket", "default shader", "default ornament",
+        "restore", "restores", "equip this shader", "change the color"
+    )
+
     if ($ProfileData.itemSockets -and $ProfileData.itemSockets.data.($Item.itemInstanceId)) {
         $socketData = $ProfileData.itemSockets.data.($Item.itemInstanceId).sockets
-        
+
         foreach ($socket in $socketData) {
             if ($socket.plugHash -and $socket.plugHash -ne 0) {
                 # Get plug definition
@@ -292,23 +310,38 @@ function Get-ItemSockets {
                 if ($Manifest -and $Manifest.InventoryItems) {
                     $plugDef = $Manifest.InventoryItems.([string]$socket.plugHash)
                 }
-                
+
                 if (!$plugDef) {
                     $plugDef = Get-ItemDefinition -ItemHash $socket.plugHash
                 }
-                
+
                 if ($plugDef -and $plugDef.displayProperties -and $plugDef.displayProperties.name) {
-                    $sockets += @{
-                        Name = $plugDef.displayProperties.name
-                        Description = if ($plugDef.displayProperties.description) { $plugDef.displayProperties.description } else { "" }
-                        Hash = $socket.plugHash
-                        IsEnabled = $socket.isEnabled
+                    $name = $plugDef.displayProperties.name
+                    $description = if ($plugDef.displayProperties.description) { $plugDef.displayProperties.description } else { "" }
+
+                    # Filter out cosmetic items
+                    $isCosmetic = $false
+                    foreach ($filter in $cosmeticFilters) {
+                        if ($name -match $filter -or $description -match $filter) {
+                            $isCosmetic = $true
+                            break
+                        }
+                    }
+
+                    # Only add non-cosmetic sockets
+                    if (-not $isCosmetic) {
+                        $sockets += @{
+                            Name = $name
+                            Description = $description
+                            Hash = $socket.plugHash
+                            IsEnabled = $socket.isEnabled
+                        }
                     }
                 }
             }
         }
     }
-    
+
     return $sockets
 }
 
@@ -318,41 +351,60 @@ function Get-ItemStats {
     param(
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$Item,
-        
+
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$ProfileData,
-        
+
         [PSCustomObject]$ItemDef
     )
-    
+
     $stats = @{}
-    
-    if ($ProfileData.itemStats -and $ProfileData.itemStats.data.($Item.itemInstanceId)) {
-        $statData = $ProfileData.itemStats.data.($Item.itemInstanceId).stats
-        
-        foreach ($statHash in $statData.Keys) {
-            $stat = $statData.$statHash
-            
-            # Common stat names mapping
-            $statName = switch ($statHash) {
-                "1735777505" { "Discipline" }
-                "144602215"  { "Intellect" }
-                "4244567218" { "Strength" }
-                "2996146975" { "Mobility" }
-                "392767087"  { "Resilience" }
-                "1943323491" { "Recovery" }
-                "1885944937" { "Range" }
-                "3597844532" { "Stability" }
-                "4043523819" { "Handling" }
-                "2837207746" { "Swing Speed" }
-                "943549884"  { "Damage" }
-                default { "Stat_$statHash" }
+
+    # Try to get stats from itemStats component
+    if ($ProfileData.itemStats -and $ProfileData.itemStats.data -and $Item.itemInstanceId) {
+        $itemStats = $ProfileData.itemStats.data.($Item.itemInstanceId)
+
+        if ($itemStats -and $itemStats.stats) {
+            $statData = $itemStats.stats
+
+            # Get all stat hash keys
+            $statKeys = $statData | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+
+            foreach ($statHash in $statKeys) {
+                $stat = $statData.$statHash
+
+                # Common stat names mapping (using string comparison)
+                $statName = switch ($statHash.ToString()) {
+                    "1735777505" { "Discipline" }
+                    "144602215"  { "Intellect" }
+                    "4244567218" { "Strength" }
+                    "2996146975" { "Mobility" }
+                    "392767087"  { "Resilience" }
+                    "1943323491" { "Recovery" }
+                    "1885944937" { "Range" }
+                    "3597844532" { "Stability" }
+                    "4043523819" { "Handling" }
+                    "4188031367" { "Reload Speed" }
+                    "1931675084" { "Magazine" }
+                    "1240592695" { "Rounds Per Minute" }
+                    "2715839340" { "Recoil Direction" }
+                    "3555269338" { "Zoom" }
+                    "2837207746" { "Swing Speed" }
+                    "943549884"  { "Impact" }
+                    "155624089"  { "Aim Assistance" }
+                    "447667954"  { "Draw Time" }
+                    "2961396640" { "Charge Time" }
+                    "925767036"  { "Ammo Capacity" }
+                    default { "Stat_$statHash" }
+                }
+
+                if ($stat -and $null -ne $stat.value) {
+                    $stats[$statName] = $stat.value
+                }
             }
-            
-            $stats[$statName] = $stat.value
         }
     }
-    
+
     return $stats
 }
 

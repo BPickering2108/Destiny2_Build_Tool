@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "releaseDate": "2025-01-26",
+  "changelog": [
+    "Initial release",
+    "Bungie API integration with OAuth",
+    "Full gear collection (stats, perks, sockets)",
+    "Multi-LLM support (Claude, GPT-4, Gemini, Custom)",
+    "AI build analysis (General, Raid, PvE, PvP, Vault Cleanup)",
+    "Interactive Q&A with conversation history",
+    "HTML report generation",
+    "Easy setup wizard and launcher scripts"
+  ]
+}

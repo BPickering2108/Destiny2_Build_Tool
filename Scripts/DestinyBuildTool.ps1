@@ -47,6 +47,15 @@ catch {
     exit 1
 }
 
+try {
+    . "$PSScriptRoot\Invoke-LLMAnalysis.ps1"
+    Write-Host "Loaded LLM Analysis Script" -ForegroundColor Green
+}
+catch {
+    Write-Error "Failed to load LLM analysis script: $($_.Exception.Message)"
+    exit 1
+}
+
 # Main function
 function Start-DestinyBuildTool {
     [CmdletBinding()]
@@ -65,6 +74,7 @@ function Start-DestinyBuildTool {
         try {
             $config = Get-BungieConfig
             Write-Host "Environment variables configured" -ForegroundColor Green
+            if ($config) {$config = $null}
         }
         catch {
             Write-Host "Environment configuration error: $($_.Exception.Message)" -ForegroundColor Red
@@ -173,13 +183,24 @@ function Get-FullGearCollection {
         # Save data if requested
         if ($SaveData) {
             Write-Host "`n4. Saving gear data..." -ForegroundColor Yellow
-            
-            if ($SeparateFiles) {
+
+            if ($SaveBothFormats) {
+                # Save both consolidated and individual files
+                $savedPath = Save-GearData -GearData $gearData -IncludeTextFormat
+                Write-Host "   Consolidated data saved!" -ForegroundColor Green
+                Write-Host "   - JSON format: $savedPath" -ForegroundColor Gray
+                Write-Host "   - Text format: $($savedPath -replace '\.json$', '.txt')" -ForegroundColor Gray
+
+                Save-CharacterFiles -FormattedGearData $gearData
+                Write-Host "   Individual character files saved!" -ForegroundColor Green
+                Write-Host "   - Separate JSON file for each character and vault" -ForegroundColor Gray
+            } elseif ($SeparateFiles) {
+                # Only separate files
                 Save-CharacterFiles -FormattedGearData $gearData
                 Write-Host "   Individual character files saved!" -ForegroundColor Green
                 Write-Host "   - Separate JSON file for each character and vault" -ForegroundColor Gray
             } else {
-                # Save consolidated file
+                # Only consolidated file
                 $savedPath = Save-GearData -GearData $gearData -IncludeTextFormat
                 Write-Host "   Consolidated data saved!" -ForegroundColor Green
                 Write-Host "   - JSON format: $savedPath" -ForegroundColor Gray
@@ -253,7 +274,7 @@ function Show-InteractiveMenu {
                     $script:SaveData = $false
                 }
             }
-            '4' { 
+            '4' {
                 Write-Host "`nGetting and saving individual character files..." -ForegroundColor Yellow
                 try {
                     $script:SaveData = $true
@@ -268,13 +289,96 @@ function Show-InteractiveMenu {
                     $script:SeparateFiles = $false
                 }
             }
-            '5' { 
-                Write-Host "`nBuild creation and analysis coming soon!" -ForegroundColor Yellow
+            '5' {
+                Write-Host "`nGetting and saving both consolidated and individual files..." -ForegroundColor Yellow
+                try {
+                    $script:SaveData = $true
+                    $script:SeparateFiles = $true
+                    $script:SaveBothFormats = $true
+                    Get-FullGearCollection
+                }
+                catch {
+                    Write-Host "Gear collection failed: $($_.Exception.Message)" -ForegroundColor Red
+                    Write-Host "Error details: $($_.ScriptStackTrace)" -ForegroundColor Gray
+                }
+                finally {
+                    $script:SaveData = $false
+                    $script:SeparateFiles = $false
+                    $script:SaveBothFormats = $false
+                }
             }
-            '6' { 
+            '6' {
+                Write-Host "`nStarting AI Build Analysis..." -ForegroundColor Yellow
+                try {
+                    # Select LLM provider
+                    $provider = Select-LLMProvider
+
+                    if ($provider) {
+                        # Show analysis options menu
+                        Show-AnalysisMenu
+                    }
+                }
+                catch {
+                    Write-Host "Build analysis failed: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            '7' {
+                Write-Host "`nConfiguring LLM Provider..." -ForegroundColor Yellow
+                try {
+                    Select-LLMProvider
+                }
+                catch {
+                    Write-Host "Configuration failed: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            '8' {
                 Write-Host "`nForcing re-authentication..." -ForegroundColor Yellow
+                $cacheFile = "../Data/bungie_token.json"
+                if (Test-Path $cacheFile) {
+                    Remove-Item $cacheFile -Force
+                    Write-Host "Cleared cached token" -ForegroundColor Green
+                } else {
+                    Write-Host "No cached token found" -ForegroundColor Gray
+                }
             }
-            'q' { 
+            '9' {
+                try {
+                    . "$PSScriptRoot\Update-DestinyBuildTool.ps1"
+                    Write-Host ""
+                    Write-Host "==================================" -ForegroundColor Cyan
+                    Write-Host "  Update Tool                     " -ForegroundColor Cyan
+                    Write-Host "==================================" -ForegroundColor Cyan
+                    Write-Host ""
+                    Write-Host "1. Check for Updates"
+                    Write-Host "2. Update Now"
+                    Write-Host "3. Show Version Info"
+                    Write-Host "4. Back to Main Menu"
+                    Write-Host ""
+                    $updateChoice = Read-Host "Select option"
+
+                    switch ($updateChoice) {
+                        '1' {
+                            Test-UpdateAvailable -ShowMessage
+                        }
+                        '2' {
+                            Update-Tool
+                        }
+                        '3' {
+                            Show-VersionInfo
+                        }
+                        '4' {
+                            # Return to main menu
+                        }
+                        default {
+                            Write-Host "Invalid choice" -ForegroundColor Red
+                        }
+                    }
+                }
+                catch {
+                    Write-Host "Update check failed: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'q' {
                 Write-Host "`nGoodbye! Eyes up, Guardian!" -ForegroundColor Cyan
                 return
             }
@@ -291,21 +395,107 @@ function Show-InteractiveMenu {
     } while ($choice -ne 'q')
 }
 
-# Display main menu
-function Show-MainMenu {
+# Display analysis type menu
+function Show-AnalysisMenu {
     Clear-Host
     Write-Host ""
     Write-Host "==================================" -ForegroundColor Cyan
-    Write-Host "    Destiny 2 Build Tool v1.0     " -ForegroundColor Cyan  
+    Write-Host "    Build Analysis Options        " -ForegroundColor Cyan
     Write-Host "==================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "1. Test API Connection" -ForegroundColor White
-    Write-Host "2. Get Gear Collection" -ForegroundColor White
-    Write-Host "3. Get Gear Collection + Save Consolidated Data" -ForegroundColor White
-    Write-Host "4. Get Gear Collection + Save Individual Files" -ForegroundColor White
-    Write-Host "5. AI Build Analysis (Coming Soon)" -ForegroundColor White
-    Write-Host "6. Clear Authentication Cache" -ForegroundColor White
-    Write-Host "q. Quit" -ForegroundColor White
+    Write-Host "1. General Build Analysis (All Characters)" -ForegroundColor White
+    Write-Host "2. Raid Build Analysis (Specific Character)" -ForegroundColor White
+    Write-Host "3. PvE Build Analysis (Specific Character)" -ForegroundColor White
+    Write-Host "4. PvP/Crucible Build Analysis (Specific Character)" -ForegroundColor White
+    Write-Host "5. Vault Cleanup Recommendations" -ForegroundColor Yellow
+    Write-Host "q. Back to Main Menu" -ForegroundColor White
+    Write-Host ""
+
+    $choice = Read-Host "Select analysis type"
+
+    switch ($choice) {
+        '1' {
+            Invoke-BuildAnalysis -AnalysisType "general" -SaveToFile
+        }
+        '2' {
+            $character = Select-Character
+            if ($character) {
+                Invoke-BuildAnalysis -AnalysisType "raid" -CharacterClass $character -SaveToFile
+            }
+        }
+        '3' {
+            $character = Select-Character
+            if ($character) {
+                Invoke-BuildAnalysis -AnalysisType "pve" -CharacterClass $character -SaveToFile
+            }
+        }
+        '4' {
+            $character = Select-Character
+            if ($character) {
+                Invoke-BuildAnalysis -AnalysisType "pvp" -CharacterClass $character -SaveToFile
+            }
+        }
+        '5' {
+            Invoke-BuildAnalysis -AnalysisType "vault-cleanup" -SaveToFile
+        }
+        'q' {
+            return
+        }
+        default {
+            Write-Host "Invalid choice" -ForegroundColor Red
+        }
+    }
+}
+
+# Select character for targeted analysis
+function Select-Character {
+    Write-Host "`nSelect Character Class:" -ForegroundColor Yellow
+    Write-Host "1. Hunter" -ForegroundColor White
+    Write-Host "2. Titan" -ForegroundColor White
+    Write-Host "3. Warlock" -ForegroundColor White
+    Write-Host ""
+
+    $choice = Read-Host "Select class (1-3)"
+
+    switch ($choice) {
+        '1' { return "Hunter" }
+        '2' { return "Titan" }
+        '3' { return "Warlock" }
+        default {
+            Write-Host "Invalid choice, cancelling..." -ForegroundColor Red
+            return $null
+        }
+    }
+}
+
+# Display main menu
+function Show-MainMenu {
+    Clear-Host
+
+    # Load version info
+    try {
+        . "$PSScriptRoot\Update-DestinyBuildTool.ps1"
+        $version = Get-CurrentVersion
+    }
+    catch {
+        $version = "1.0.0"
+    }
+
+    Write-Host ""
+    Write-Host "==================================" -ForegroundColor Cyan
+    Write-Host "    Destiny 2 Build Tool v$version     " -ForegroundColor Cyan
+    Write-Host "==================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "1. Test API Connection"
+    Write-Host "2. Get Gear Collection (No Save)"
+    Write-Host "3. Get Gear Collection + Save Consolidated"
+    Write-Host "4. Get Gear Collection + Save Individual Files"
+    Write-Host "5. Get Gear Collection + Save Both Formats"
+    Write-Host "6. AI Build Analysis"
+    Write-Host "7. Configure LLM Provider"
+    Write-Host "8. Clear Authentication Cache"
+    Write-Host "9. Check for Updates"
+    Write-Host "q. Quit"
     Write-Host ""
 }
 

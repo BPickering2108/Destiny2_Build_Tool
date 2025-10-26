@@ -15,3 +15,9 @@ manifest.json
 Data/
 *_gear.json
 gear_collection.*
+build_analysis_*.txt
+build_analysis_*.html
+
+# Manifest cache
+Manifest/manifest.json
+Manifest/manifest_version.txt
